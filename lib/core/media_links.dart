@@ -19,13 +19,31 @@ bool isImageUrl(Uri u) {
       host == 'i.imgur.com';
 }
 
+/// True when [u] points at a host whose videos need API resolution before they
+/// can play (RedGIFs, gfycat, Streamable) — or a RedGIFs CDN media URL.
+bool isExternalVideoHost(Uri u) {
+  final host = u.host.toLowerCase();
+  return host == 'redgifs.com' ||
+      host.endsWith('.redgifs.com') ||
+      host == 'gfycat.com' ||
+      host.endsWith('.gfycat.com') ||
+      host == 'streamable.com' ||
+      host.endsWith('.streamable.com');
+}
+
 bool isVideoUrl(Uri u) {
   final p = _path(u);
   if (p.endsWith('.mp4') || p.endsWith('.gifv')) return true;
-  return u.host.toLowerCase() == 'v.redd.it';
+  if (u.host.toLowerCase() == 'v.redd.it') return true;
+  return isExternalVideoHost(u);
 }
 
 bool isMediaUrl(Uri u) => isVideoUrl(u) || isImageUrl(u);
+
+/// Normalizes common host quirks to a directly-playable video URL
+/// (e.g. Imgur `.gifv` → `.mp4`).
+String resolveVideoUrl(String url) =>
+    url.endsWith('.gifv') ? url.replaceAll('.gifv', '.mp4') : url;
 
 /// True when the URL points at an animated GIF (rendered as an image, but we
 /// keep it distinct so callers can badge it).

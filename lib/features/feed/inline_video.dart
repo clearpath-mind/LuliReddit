@@ -3,18 +3,27 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:visibility_detector/visibility_detector.dart';
 
+import '../../core/network/media_resolver.dart';
+
 /// A feed video that autoplays (muted, looping) while it's on screen and pauses
 /// when scrolled away. Tap opens the full-screen viewer (with sound).
+///
+/// Pass either a directly-playable [url] or a [resolver] that turns an external
+/// host's watch page (RedGIFs, Streamable, …) into a playable source; the
+/// poster is shown while that resolution is in flight.
 class InlineVideo extends StatefulWidget {
   const InlineVideo({
     super.key,
-    required this.url,
+    this.url,
+    this.resolver,
     required this.height,
     required this.onTap,
     this.poster,
-  });
+  }) : assert(url != null || resolver != null,
+            'InlineVideo needs either a url or a resolver');
 
-  final String url;
+  final String? url;
+  final Future<ResolvedMedia> Function()? resolver;
   final double height;
   final VoidCallback onTap;
   final String? poster;
@@ -28,11 +37,33 @@ class _InlineVideoState extends State<InlineVideo> {
   bool _ready = false;
   bool _muted = true;
   bool _visible = false;
+  String? _stillImage; // resolution produced a still image (RedGIFs type-2)
 
   @override
   void initState() {
     super.initState();
-    final c = VideoPlayerController.networkUrl(Uri.parse(widget.url));
+    final url = widget.url;
+    if (url != null && url.isNotEmpty) {
+      _initPlayer(url);
+    } else {
+      _initFromResolver();
+    }
+  }
+
+  Future<void> _initFromResolver() async {
+    try {
+      final resolved = await widget.resolver!();
+      if (!mounted) return;
+      if (resolved.isImage) {
+        setState(() => _stillImage = resolved.url);
+        return;
+      }
+      _initPlayer(resolved.url);
+    } catch (_) {/* poster stays up */}
+  }
+
+  void _initPlayer(String url) {
+    final c = VideoPlayerController.networkUrl(Uri.parse(url));
     _c = c;
     c.setLooping(true);
     c.setVolume(0);
@@ -62,7 +93,7 @@ class _InlineVideoState extends State<InlineVideo> {
   Widget build(BuildContext context) {
     final c = _c;
     return VisibilityDetector(
-      key: Key('inlinevid_${widget.url}'),
+      key: Key('inlinevid_${widget.url ?? widget.poster}'),
       onVisibilityChanged: _onVisibility,
       child: GestureDetector(
         onTap: widget.onTap,
@@ -82,11 +113,13 @@ class _InlineVideoState extends State<InlineVideo> {
                     child: VideoPlayer(c),
                   ),
                 )
-              else if (widget.poster != null)
-                CachedNetworkImage(imageUrl: widget.poster!, fit: BoxFit.cover)
+              else if (_stillImage != null || widget.poster != null)
+                CachedNetworkImage(
+                    imageUrl: _stillImage ?? widget.poster!,
+                    fit: BoxFit.cover)
               else
                 const ColoredBox(color: Colors.black12),
-              if (!_ready)
+              if (!_ready && _stillImage == null)
                 const Center(
                     child: SizedBox(
                         width: 26,

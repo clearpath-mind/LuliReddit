@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -12,7 +13,6 @@ import '../../core/network/rate_limit.dart';
 import '../../data/ai_service.dart';
 import '../post/comments_controller.dart' show commentSorts, commentSortLabels;
 import '../../core/providers.dart';
-import '../../core/reddit_constants.dart';
 import '../../data/reddit_repository.dart';
 import '../auth/auth_controller.dart';
 import '../notifications/inbox_poller.dart';
@@ -556,9 +556,11 @@ class _SettingsListState extends ConsumerState<SettingsList> {
     final info = await UpdateChecker().check();
     if (!context.mounted) return;
     if (info == null) {
+      final pkg = await PackageInfo.fromPlatform();
+      if (!context.mounted) return;
       messenger.showSnackBar(SnackBar(
           content: Text(
-              "You're on the latest version (${RedditConstants.appVersion}).")));
+              "You're on the latest version (${pkg.version}).")));
       return;
     }
     showDialog(

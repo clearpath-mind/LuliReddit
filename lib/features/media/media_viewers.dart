@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
@@ -15,6 +15,23 @@ import 'package:video_player/video_player.dart';
 
 import '../../core/share.dart';
 import '../../models/post.dart';
+
+/// Browser-like User-Agent for media downloads (Reddit's CDN and RedGIFs both
+/// reject requests without a real one).
+const String _mediaUserAgent =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+/// Headers RedGIFs' CDN expects for direct media requests.
+Map<String, String> _mediaHeaders(String url) {
+  final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+  final headers = <String, String>{'User-Agent': _mediaUserAgent};
+  if (host.endsWith('redgifs.com')) {
+    headers['Referer'] = 'https://www.redgifs.com/';
+    headers['Origin'] = 'https://www.redgifs.com';
+  }
+  return headers;
+}
 
 /// A left-edge swipe-to-go-back strip (iOS-style), safe to overlay on viewers
 /// without stealing PhotoView pan / gallery paging (only the left 24px).
@@ -61,19 +78,13 @@ void openGalleryViewer(BuildContext context, List<GalleryImage> images,
 }
 
 void openVideoViewer(BuildContext context, String url,
-    {String? title, String? downloadUrl, String? externalUrl}) {
+    {String? title, String? downloadUrl, String? externalUrl, String? poster}) {
   Navigator.of(context).push(_overlayRoute(_VideoViewer(
       url: url,
       title: title,
       downloadUrl: downloadUrl,
-      externalUrl: externalUrl)));
-}
-
-/// Normalizes common host quirks to a directly-playable video URL
-/// (e.g. Imgur `.gifv` → `.mp4`).
-String resolveVideoUrl(String url) {
-  if (url.endsWith('.gifv')) return url.replaceAll('.gifv', '.mp4');
-  return url;
+      externalUrl: externalUrl,
+      poster: poster)));
 }
 
 /// Downloads a media file to the device gallery/Photos, with a cancellable
@@ -100,17 +111,14 @@ Future<void> saveMediaToGallery(BuildContext context, String url,
     final ts = DateTime.now().millisecondsSinceEpoch;
     final path = '${dir.path}/luli_$ts.$ext';
     // Reddit's CDN (v.redd.it) closes the connection mid-stream for requests
-    // without a real User-Agent, so set one and allow a generous timeout.
+    // without a real User-Agent, so set one (plus RedGIFs headers when needed)
+    // and allow a generous timeout.
     await Dio().download(
       url,
       path,
       cancelToken: cancel,
       options: Options(
-        headers: const {
-          'User-Agent':
-              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
-                  '(KHTML, like Gecko) Chrome/124.0 Safari/537.36'
-        },
+        headers: _mediaHeaders(url),
         receiveTimeout: const Duration(seconds: 90),
       ),
       onReceiveProgress: (got, total) => progress.value = (got, total),
@@ -454,11 +462,16 @@ class _GalleryViewerState extends State<_GalleryViewer> with _ImmersiveDismiss {
 
 class _VideoViewer extends StatefulWidget {
   const _VideoViewer(
-      {required this.url, this.title, this.downloadUrl, this.externalUrl});
+      {required this.url,
+      this.title,
+      this.downloadUrl,
+      this.externalUrl,
+      this.poster});
   final String url;
   final String? title;
   final String? downloadUrl; // direct mp4 for saving (HLS can't be saved)
   final String? externalUrl; // original link, for "open in browser" fallback
+  final String? poster; // shown while the video initializes
 
   @override
   State<_VideoViewer> createState() => _VideoViewerState();
@@ -478,15 +491,57 @@ class _VideoViewerState extends State<_VideoViewer> {
   }
 
   Future<void> _init() async {
+    VideoPlayerController? v;
     try {
-      final v = VideoPlayerController.networkUrl(Uri.parse(widget.url));
+      v = VideoPlayerController.networkUrl(Uri.parse(widget.url));
       await v.initialize();
+      if (!mounted) {
+        await v.dispose();
+        return;
+      }
+      await v.setLooping(true);
+      await v.play();
+      setState(() => _video = v);
+      _scheduleHide();
+    } catch (_) {
+      // Streaming failed (e.g. RedGIFs' CDN rejects header-less player
+      // requests) — download to a temp file with the right headers and play
+      // the local copy instead.
+      await v?.dispose();
+      await _playFromTempFile();
+    }
+  }
+
+  Future<void> _playFromTempFile() async {
+    VideoPlayerController? v;
+    try {
+      // HLS can't be materialized as a single file — let the error view show
+      // (streaming HLS rarely fails, so this is a safe guard only).
+      if (widget.url.toLowerCase().contains('.m3u8')) {
+        setState(() => _error = 'Unsupported stream');
+        return;
+      }
+      final dir = await getTemporaryDirectory();
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final path = '${dir.path}/luli_$ts.mp4';
+      await Dio().download(widget.url, path,
+          options: Options(
+            headers: _mediaHeaders(widget.url),
+            receiveTimeout: const Duration(seconds: 90),
+          ));
       if (!mounted) return;
+      v = VideoPlayerController.file(File(path));
+      await v.initialize();
+      if (!mounted) {
+        await v.dispose();
+        return;
+      }
       await v.setLooping(true);
       await v.play();
       setState(() => _video = v);
       _scheduleHide();
     } catch (e) {
+      await v?.dispose();
       if (mounted) setState(() => _error = '$e');
     }
   }
@@ -577,7 +632,19 @@ class _VideoViewerState extends State<_VideoViewer> {
           if (_error != null)
             Center(child: _errorView(context))
           else if (v == null)
-            const Center(child: CircularProgressIndicator(color: Colors.white))
+            Stack(
+              fit: StackFit.expand,
+              children: [
+                if (widget.poster != null)
+                  CachedNetworkImage(
+                      imageUrl: widget.poster!,
+                      fit: BoxFit.contain,
+                      errorWidget: (_, __, ___) =>
+                          const ColoredBox(color: Colors.black)),
+                const Center(
+                    child: CircularProgressIndicator(color: Colors.white)),
+              ],
+            )
           else
             Positioned.fill(
               child: GestureDetector(

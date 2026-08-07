@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../core/reddit_constants.dart';
 
@@ -22,7 +23,12 @@ class UpdateChecker {
       );
       final data = res.data as Map<String, dynamic>;
       final tag = (data['tag_name'] as String? ?? '').replaceFirst('v', '').trim();
-      if (tag.isEmpty || !_isNewer(tag, RedditConstants.appVersion)) return null;
+      if (tag.isEmpty) return null;
+      // Compare against the actually-installed version (versionName from the
+      // APK), not a hardcoded constant, so release tags and app version can't
+      // drift apart.
+      final installed = (await PackageInfo.fromPlatform()).version;
+      if (!_isNewer(tag, installed)) return null;
       // Pick the LARGEST .apk — that's the universal build (installs on any
       // device). Releases also carry smaller per-ABI split APKs for F-Droid.
       final assets = (data['assets'] as List?) ?? const [];

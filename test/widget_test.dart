@@ -47,4 +47,34 @@ void main() {
     expect(post.isSelf, true);
     expect(post.selftext, 'body text');
   });
+
+  test('Post.fromData detects redgifs posts as video without a post_hint', () {
+    final post = Post.fromData({
+      'id': 'ghi',
+      'title': 'Clip',
+      'subreddit': 'funny',
+      'subreddit_name_prefixed': 'r/funny',
+      'author': 'someone',
+      'score': 5,
+      'num_comments': 1,
+      'upvote_ratio': 0.9,
+      'created_utc': 1700000000,
+      'permalink': '/r/funny/comments/ghi/clip',
+      'url': 'https://www.redgifs.com/watch/someid',
+      'domain': 'redgifs.com',
+      'preview': {
+        'images': [
+          {
+            'source': {
+              'url': 'https://thumbs3.redgifs.com/Someid.jpg',
+              'width': 800,
+              'height': 600,
+            }
+          }
+        ]
+      },
+    });
+    expect(post.type, PostType.video);
+    expect(post.previewUrl, 'https://thumbs3.redgifs.com/Someid.jpg');
+  });
 }

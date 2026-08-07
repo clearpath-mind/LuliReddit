@@ -13,6 +13,7 @@ import '../../core/format.dart';
 import '../../core/providers.dart';
 import '../../core/deep_links.dart';
 import '../../core/media_links.dart';
+import '../../core/network/media_resolver.dart';
 import '../../core/share.dart';
 import '../../core/widgets/markdown_style.dart';
 import '../../data/ai_service.dart';
@@ -482,12 +483,27 @@ class _PostDetailScreenState extends ConsumerState<PostDetailScreen> {
 
 /// Opens a link tapped inside a comment: media plays/shows in-app, reddit links
 /// route in-app, everything else goes to the browser.
-void _openCommentLink(BuildContext context, String? href) {
+Future<void> _openCommentLink(
+    BuildContext context, String? href, MediaResolver resolver) async {
   if (href == null || href.isEmpty) return;
   final uri = Uri.tryParse(href);
   if (uri == null) return;
   if (isVideoUrl(uri)) {
-    openVideoViewer(context, resolveVideoUrl(href), externalUrl: href);
+    if (isExternalVideoHost(uri)) {
+      // RedGIFs / gfycat / Streamable — resolve the watch page to an mp4 first.
+      final resolved = await resolver.resolve(href);
+      if (!context.mounted) return;
+      if (resolved.isImage) {
+        openImageViewer(context, resolved.url);
+      } else {
+        openVideoViewer(context, resolved.url,
+            downloadUrl: resolved.saveUrl,
+            externalUrl: href,
+            poster: resolved.poster);
+      }
+    } else {
+      openVideoViewer(context, resolveVideoUrl(href), externalUrl: href);
+    }
     return;
   }
   if (isImageUrl(uri)) {
@@ -505,8 +521,9 @@ void _openCommentLink(BuildContext context, String? href) {
 /// Inline previews for any media linked in a comment body (images, gifs,
 /// videos), so comments don't just show a bare URL that opens a browser.
 class _CommentMedia extends StatelessWidget {
-  const _CommentMedia({required this.body});
+  const _CommentMedia({required this.body, required this.resolver});
   final String body;
+  final MediaResolver resolver;
 
   @override
   Widget build(BuildContext context) {
@@ -523,7 +540,7 @@ class _CommentMedia extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: GestureDetector(
-                onTap: () => _openCommentLink(context, uri.toString()),
+                onTap: () => _openCommentLink(context, uri.toString(), resolver),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: Stack(
@@ -803,7 +820,7 @@ class _PostHeaderState extends ConsumerState<_PostHeader> {
     }
   }
 
-  void _openMedia() {
+  Future<void> _openMedia() async {
     final p = widget.post;
     switch (p.type) {
       case PostType.image:
@@ -818,11 +835,30 @@ class _PostHeaderState extends ConsumerState<_PostHeader> {
       case PostType.gallery:
         openGalleryViewer(context, p.gallery, title: p.title);
       case PostType.video:
-        openVideoViewer(
-            context, p.hlsUrl ?? p.fallbackVideoUrl ?? resolveVideoUrl(p.url),
-            title: p.title,
-            downloadUrl: p.fallbackVideoUrl ?? resolveVideoUrl(p.url),
-            externalUrl: p.url);
+        final direct = p.hlsUrl ?? p.fallbackVideoUrl;
+        if (direct != null) {
+          openVideoViewer(context, direct,
+              title: p.title, downloadUrl: direct, externalUrl: p.url);
+        } else if (isExternalVideoHost(Uri.tryParse(p.url) ?? Uri())) {
+          // External host (RedGIFs / gfycat / Streamable): resolve its watch
+          // page to a playable mp4 before opening the viewer.
+          final resolved =
+              await ref.read(mediaResolverProvider).resolve(p.url);
+          if (!mounted) return;
+          if (resolved.isImage) {
+            openImageViewer(context, resolved.url, title: p.title);
+          } else {
+            openVideoViewer(context, resolved.url,
+                title: p.title,
+                downloadUrl: resolved.saveUrl,
+                externalUrl: p.url,
+                poster: resolved.poster);
+          }
+        } else {
+          final src = resolveVideoUrl(p.url);
+          openVideoViewer(context, src,
+              title: p.title, downloadUrl: src, externalUrl: p.url);
+        }
       case PostType.link:
         launchUrl(Uri.parse(p.url), mode: LaunchMode.externalApplication);
       case PostType.self:
@@ -1244,10 +1280,12 @@ class _CommentTileState extends ConsumerState<_CommentTile> {
                     data: comment.body,
                     selectable: true,
                     styleSheet: redditMarkdownStyle(context),
-                    onTapLink: (_, href, __) =>
-                        _openCommentLink(context, href),
+                    onTapLink: (_, href, __) => _openCommentLink(
+                        context, href, ref.read(mediaResolverProvider)),
                   ),
-                  _CommentMedia(body: comment.body),
+                  _CommentMedia(
+                      body: comment.body,
+                      resolver: ref.read(mediaResolverProvider)),
                 ],
               ),
             ),

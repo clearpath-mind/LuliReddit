@@ -162,6 +162,17 @@ PostType _detectType(Map<String, dynamic> d, bool isVideo, bool hasGallery) {
       host == 'i.imgur.com') {
     return PostType.image;
   }
+  // External video hosts (RedGIFs, gfycat, Streamable) are videos even when
+  // Reddit omits the post_hint or media block; their playable mp4 is resolved
+  // at playback time via MediaResolver.
+  if (host == 'redgifs.com' ||
+      host.endsWith('.redgifs.com') ||
+      host == 'gfycat.com' ||
+      host.endsWith('.gfycat.com') ||
+      host == 'streamable.com' ||
+      host.endsWith('.streamable.com')) {
+    return PostType.video;
+  }
   return PostType.link;
 }
 

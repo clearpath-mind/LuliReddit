@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../core/analytics.dart';
 import '../../core/format.dart';
+import '../../core/media_links.dart';
 import '../../core/providers.dart';
 import '../../core/widgets/tap_guard.dart';
 import 'inline_video.dart';
@@ -98,7 +99,7 @@ class _PostCardState extends ConsumerState<PostCard> {
     );
   }
 
-  void _openMedia() {
+  Future<void> _openMedia() async {
     final p = widget.post;
     // Viewing media is engagement too (slightly stronger than a plain open).
     if (p.type != PostType.self &&
@@ -119,11 +120,30 @@ class _PostCardState extends ConsumerState<PostCard> {
       case PostType.gallery:
         openGalleryViewer(context, p.gallery, title: p.title);
       case PostType.video:
-        final src = p.hlsUrl ?? p.fallbackVideoUrl ?? resolveVideoUrl(p.url);
-        openVideoViewer(context, src,
-            title: p.title,
-            downloadUrl: p.fallbackVideoUrl ?? resolveVideoUrl(p.url),
-            externalUrl: p.url);
+        final direct = p.hlsUrl ?? p.fallbackVideoUrl;
+        if (direct != null) {
+          openVideoViewer(context, direct,
+              title: p.title, downloadUrl: direct, externalUrl: p.url);
+        } else if (isExternalVideoHost(Uri.tryParse(p.url) ?? Uri())) {
+          // External host (RedGIFs / gfycat / Streamable): resolve its watch
+          // page to a playable mp4 before opening the viewer.
+          final resolved =
+              await ref.read(mediaResolverProvider).resolve(p.url);
+          if (!mounted) return;
+          if (resolved.isImage) {
+            openImageViewer(context, resolved.url, title: p.title);
+          } else {
+            openVideoViewer(context, resolved.url,
+                title: p.title,
+                downloadUrl: resolved.saveUrl,
+                externalUrl: p.url,
+                poster: resolved.poster);
+          }
+        } else {
+          final src = resolveVideoUrl(p.url);
+          openVideoViewer(context, src,
+              title: p.title, downloadUrl: src, externalUrl: p.url);
+        }
       case PostType.link:
         launchUrl(Uri.parse(p.url), mode: LaunchMode.externalApplication);
       case PostType.self:
@@ -480,15 +500,49 @@ class _PostCardState extends ConsumerState<PostCard> {
     if (p.type == PostType.video &&
         !blur &&
         ref.watch(settingsControllerProvider).autoplayMedia) {
-      final vurl = p.hlsUrl ?? p.fallbackVideoUrl ?? resolveVideoUrl(p.url);
-      if (vurl.isNotEmpty && !vurl.toLowerCase().endsWith('.gif')) {
+      final direct = p.hlsUrl ?? p.fallbackVideoUrl;
+      final uri = Uri.tryParse(p.url) ?? Uri();
+      if (direct != null) {
+        if (!direct.toLowerCase().endsWith('.gif')) {
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: InlineVideo(
+                key: ValueKey('iv_${p.id}'),
+                url: direct,
+                poster: url,
+                height: height,
+                onTap: _openMedia,
+              ),
+            ),
+          );
+        }
+      } else if (isExternalVideoHost(uri)) {
+        // External host (RedGIFs / gfycat / Streamable): resolve the watch
+        // page to an mp4 in the widget (poster shows while resolving).
         return Padding(
           padding: const EdgeInsets.only(bottom: 4),
           child: ClipRRect(
             borderRadius: BorderRadius.circular(16),
             child: InlineVideo(
               key: ValueKey('iv_${p.id}'),
-              url: vurl,
+              resolver: () => ref.read(mediaResolverProvider).resolve(p.url),
+              poster: url,
+              height: height,
+              onTap: _openMedia,
+            ),
+          ),
+        );
+      } else if (isVideoUrl(uri)) {
+        // Direct mp4 / imgur gifv links — normalize and autoplay directly.
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(16),
+            child: InlineVideo(
+              key: ValueKey('iv_${p.id}'),
+              url: resolveVideoUrl(p.url),
               poster: url,
               height: height,
               onTap: _openMedia,

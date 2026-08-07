@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../data/reddit_repository.dart';
 import '../features/auth/auth_controller.dart';
 import '../features/settings/settings_controller.dart';
+import 'network/media_resolver.dart';
 import 'network/rate_limit.dart';
 import 'network/reddit_client.dart';
 
@@ -29,3 +30,6 @@ final redditRepositoryProvider = Provider<RedditRepository>((ref) {
   ref.listen(settingsControllerProvider, (_, s) => apply(s));
   return repo;
 });
+
+/// Resolves external video hosts (RedGIFs, Streamable, …) to playable sources.
+final mediaResolverProvider = Provider<MediaResolver>((ref) => MediaResolver());
